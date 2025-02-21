@@ -204,9 +204,7 @@ public:
       return;
     }
 
-    unsigned old_count = _adj.count_ones();
     _adj.set_bit(i, j);
-    unsigned new_count = _adj.count_ones();
 
     // Recompute paths after adding edge
     update_path(i, j);

@@ -2,8 +2,12 @@
 #define __DIGRAPH_HH__
 #include "matrix.hh"
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 
 class RoutingOptimzer;
 class digraph {
@@ -63,14 +67,168 @@ private:
   digraph(unsigned n) : _n(n), _adj(n, n), _path(n, n), _viable_edges(n, n) {}
 
 public:
+  // Initialize with basic grid connectivity but no turns
   digraph(unsigned num_chips_x, unsigned num_chips_y)
       : digraph(num_chips_x * num_chips_y * total_nodes) {
     _num_chips_x = num_chips_x;
     _num_chips_y = num_chips_y;
-
-    // Add viable chip-internal edges
+    
+    initialize_viable_edges();
+    initialize_grid_connections();
+    compute_paths();
+  }
+  
+  // Initialize with XY routing 
+  static digraph create_xy_routing(unsigned num_chips_x, unsigned num_chips_y) {
+    digraph d(num_chips_x, num_chips_y);
+    
+    // Add turns for XY routing (first X, then Y)
     for (int chip_x = 0; chip_x < num_chips_x; chip_x++) {
       for (int chip_y = 0; chip_y < num_chips_y; chip_y++) {
+        // XY routing principle: first route in X direction, then in Y direction
+        
+        // East input to North/South output (after completing X movement)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        
+        // West input to North/South output (after completing X movement)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        
+        // Allow straight-through paths
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, west_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, north_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, south_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        
+        // Since we're using XY routing, we don't add Y→X turns (North/South input to East/West output)
+        // This restriction is what prevents cycles in XY routing
+      }
+    }
+    
+    return d;
+  }
+  
+  // Initialize with West-first routing
+  static digraph create_west_first_routing(unsigned num_chips_x, unsigned num_chips_y) {
+    digraph d(num_chips_x, num_chips_y);
+    
+    // Add turns for West-first routing
+    for (int chip_x = 0; chip_x < num_chips_x; chip_x++) {
+      for (int chip_y = 0; chip_y < num_chips_y; chip_y++) {
+        // West-first routing allows all turns except those that create cycles
+        
+        // West-to-North/South/East turns (always allowed in West-first)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+        
+        // North-to-South/East turns (no West turn to prevent cycles)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, north_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, north_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+        
+        // South-to-North/East turns (no West turn to prevent cycles)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, south_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, south_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+        
+        // East-to-North/South turns (no West turn to prevent cycles)
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        
+        // CPU out to all directions
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, east_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, south_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, west_out));
+      }
+    }
+    
+    return d;
+  }
+  
+  // Initialize with Odd-Even routing
+  static digraph create_odd_even_routing(unsigned num_chips_x, unsigned num_chips_y) {
+    digraph d(num_chips_x, num_chips_y);
+    
+    // Add turns for Odd-Even routing
+    for (int chip_x = 0; chip_x < num_chips_x; chip_x++) {
+      for (int chip_y = 0; chip_y < num_chips_y; chip_y++) {
+        // Odd-Even routing rules depend on column
+        bool is_even_column = (chip_x % 2 == 0);
+        
+        // East-to-North/South turns allowed in all columns
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, east_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        
+        // West-to-North/South turns allowed in all columns
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, west_in),
+                         d.node_idx(chip_x, chip_y, south_out));
+        
+        // North-to-East turns allowed in all columns
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, north_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+                         
+        // South-to-East turns allowed in all columns
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, south_in),
+                         d.node_idx(chip_x, chip_y, east_out));
+        
+        // North-to-West turns allowed only in even columns
+        if (is_even_column) {
+          d.addacyclic_edge(d.node_idx(chip_x, chip_y, north_in),
+                           d.node_idx(chip_x, chip_y, west_out));
+        }
+        
+        // South-to-West turns allowed only in even columns
+        if (is_even_column) {
+          d.addacyclic_edge(d.node_idx(chip_x, chip_y, south_in),
+                           d.node_idx(chip_x, chip_y, west_out));
+        }
+        
+        // CPU out to all directions
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, north_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, east_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, south_out));
+        d.addacyclic_edge(d.node_idx(chip_x, chip_y, cpu_out),
+                         d.node_idx(chip_x, chip_y, west_out));
+      }
+    }
+    
+    return d;
+  }
+
+private:
+  // Initialize viable edges (all possible turns) 
+  void initialize_viable_edges() {
+    for (int chip_x = 0; chip_x < _num_chips_x; chip_x++) {
+      for (int chip_y = 0; chip_y < _num_chips_y; chip_y++) {
         // Add viable edges between all cardinal in/out ports
         // North in -> {East,South,West} out
         _viable_edges.set_bit(node_idx(chip_x, chip_y, north_in),
@@ -124,7 +282,8 @@ public:
         _viable_edges.set_bit(node_idx(chip_x, chip_y, cpu_out),
                               node_idx(chip_x, chip_y, west_out));
 
-        // Add required edges from cardinal in ports to cpu_in
+        // Add required edges from all cardinal in ports to cpu_in
+        // These are essential for CPU connectivity
         _adj.set_bit(node_idx(chip_x, chip_y, north_in),
                      node_idx(chip_x, chip_y, cpu_in));
         _adj.set_bit(node_idx(chip_x, chip_y, east_in),
@@ -133,10 +292,23 @@ public:
                      node_idx(chip_x, chip_y, cpu_in));
         _adj.set_bit(node_idx(chip_x, chip_y, west_in),
                      node_idx(chip_x, chip_y, cpu_in));
+        
+        // Add required edges from cpu_out to all cardinal out ports
+        // Also essential for CPU connectivity
+        _adj.set_bit(node_idx(chip_x, chip_y, cpu_out),
+                     node_idx(chip_x, chip_y, north_out));
+        _adj.set_bit(node_idx(chip_x, chip_y, cpu_out),
+                     node_idx(chip_x, chip_y, east_out));
+        _adj.set_bit(node_idx(chip_x, chip_y, cpu_out),
+                     node_idx(chip_x, chip_y, south_out));
+        _adj.set_bit(node_idx(chip_x, chip_y, cpu_out),
+                     node_idx(chip_x, chip_y, west_out));
       }
     }
-
-    // Add inter-chip edges for the entire grid
+  }
+  
+  // Initialize grid connections
+  void initialize_grid_connections() {
     for (int chip_x = 0; chip_x < _num_chips_x; chip_x++) {
       for (int chip_y = 0; chip_y < _num_chips_y; chip_y++) {
         // Connect to north neighbor if not on top edge
@@ -172,8 +344,9 @@ public:
         }
       }
     }
-    compute_paths();
   }
+
+public:
 
   // Warshall's algorithm
   void compute_paths() {
@@ -457,5 +630,163 @@ public:
 
   unsigned NumChipsX() const { return _num_chips_x; }
   unsigned NumChipsY() const { return _num_chips_y; }
+  
+  // Convert internal_node enum to string
+  const char* node_type_to_string(internal_node node) const {
+    switch (node) {
+      case north_in: return "north_in";
+      case north_out: return "north_out";
+      case east_in: return "east_in";
+      case east_out: return "east_out";
+      case south_in: return "south_in";
+      case south_out: return "south_out";
+      case west_in: return "west_in";
+      case west_out: return "west_out";
+      case cpu_in: return "cpu_in";
+      case cpu_out: return "cpu_out";
+      default: return "unknown";
+    }
+  }
+  
+  // Log turn edges to a file
+  bool log_turn_edges(const std::string& filename, const std::string& routing_type, bool optimized) const {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+      return false;
+    }
+    
+    // Write header
+    file << "# DIGRAPH-TURNS 1.0\n";
+    file << "# rows: " << _num_chips_y << "\n";
+    file << "# cols: " << _num_chips_x << "\n";
+    file << "# routing: " << routing_type << "\n";
+    file << "# optimized: " << (optimized ? "true" : "false") << "\n";
+    file << "# turn_edges: " << count_all_turn_edges() << "\n\n";
+    
+    // Write format description
+    file << "# Format: <chip_row>,<chip_col>: <from_port> -> <to_port>\n";
+    
+    // Check all possible internal turn edges in each chip
+    internal_node in_ports[] = {north_in, east_in, south_in, west_in};
+    internal_node out_ports[] = {north_out, east_out, south_out, west_out};
+    
+    for (size_t y = 0; y < _num_chips_y; y++) {
+      for (size_t x = 0; x < _num_chips_x; x++) {
+        // Check each possible in->out combination
+        for (auto in_port : in_ports) {
+          for (auto out_port : out_ports) {
+            // Skip straight-through connections
+            if ((in_port == north_in && out_port == south_out) ||
+                (in_port == south_in && out_port == north_out) ||
+                (in_port == east_in && out_port == west_out) ||
+                (in_port == west_in && out_port == east_out)) {
+              continue;
+            }
+            
+            // If this turn edge exists, log it
+            if (_adj.get_bit(node_idx(x, y, in_port), node_idx(x, y, out_port))) {
+              file << y << "," << x << ": " 
+                   << node_type_to_string(in_port) << " -> " 
+                   << node_type_to_string(out_port) << "\n";
+            }
+          }
+        }
+      }
+    }
+    
+    file.close();
+    return true;
+  }
+  
+  // Export network to BookSim2 anynet format
+  bool export_booksim2_anynet(const std::string& filename, const std::string& routing_type, bool optimized) const {
+    // Create two files: main config file and the anynet topology file
+    std::string anynet_file = filename + "_anynet_file";
+    
+    // Create the anynet topology file first
+    std::ofstream anynet_os(anynet_file);
+    if (!anynet_os.is_open()) {
+      return false;
+    }
+    
+    // Create router ID mapping
+    std::vector<std::vector<int>> router_ids(_num_chips_y, std::vector<int>(_num_chips_x));
+    for (size_t y = 0; y < _num_chips_y; y++) {
+      for (size_t x = 0; x < _num_chips_x; x++) {
+        router_ids[y][x] = y * _num_chips_x + x;
+      }
+    }
+    
+    // Process all routers and their connections
+    for (size_t y = 0; y < _num_chips_y; y++) {
+      for (size_t x = 0; x < _num_chips_x; x++) {
+        // Router ID for current chip
+        int router_id = router_ids[y][x];
+        
+        // Start a line for this router and its node
+        anynet_os << "router " << router_id << " node " << router_id;
+        
+        // Check connection to north neighbor
+        if (y > 0 && _adj.get_bit(node_idx(x, y, north_out), node_idx(x, y-1, south_in))) {
+          int neighbor_id = router_ids[y-1][x];
+          anynet_os << " router " << neighbor_id;
+        }
+        
+        // Check connection to east neighbor
+        if (x < _num_chips_x - 1 && _adj.get_bit(node_idx(x, y, east_out), node_idx(x+1, y, west_in))) {
+          int neighbor_id = router_ids[y][x+1];
+          anynet_os << " router " << neighbor_id;
+        }
+        
+        // Check connection to south neighbor
+        if (y < _num_chips_y - 1 && _adj.get_bit(node_idx(x, y, south_out), node_idx(x, y+1, north_in))) {
+          int neighbor_id = router_ids[y+1][x];
+          anynet_os << " router " << neighbor_id;
+        }
+        
+        // Check connection to west neighbor
+        if (x > 0 && _adj.get_bit(node_idx(x, y, west_out), node_idx(x-1, y, east_in))) {
+          int neighbor_id = router_ids[y][x-1];
+          anynet_os << " router " << neighbor_id;
+        }
+        
+        anynet_os << std::endl;
+      }
+    }
+    
+    anynet_os.close();
+    
+    // Now create the main configuration file
+    std::ofstream config_os(filename);
+    if (!config_os.is_open()) {
+      return false;
+    }
+    
+    // Write the BookSim2 configuration
+    config_os << "// BookSim2 anynet configuration generated from digraph" << std::endl;
+    config_os << "// Routing type: " << routing_type << ", Optimized: " << (optimized ? "true" : "false") << std::endl;
+    config_os << "// Grid size: " << _num_chips_y << " rows x " << _num_chips_x << " columns" << std::endl;
+    config_os << std::endl;
+    
+    // Add standard BookSim2 configuration parameters
+    config_os << "// Standard BookSim2 configuration parameters" << std::endl;
+    config_os << "topology = anynet;" << std::endl;
+    config_os << "routing_function = min;" << std::endl;
+    config_os << "network_file = " << anynet_file << ";" << std::endl;
+    config_os << "num_vcs = 4;" << std::endl;
+    config_os << "vc_buf_size = 4;" << std::endl;
+    config_os << "wait_for_tail_credit = 1;" << std::endl;
+    config_os << std::endl;
+    config_os << "// Traffic pattern" << std::endl;
+    config_os << "traffic = uniform;" << std::endl;
+    config_os << "injection_rate = 0.1;" << std::endl;
+    config_os << "sim_type = latency;" << std::endl;
+    config_os << "sample_period = 10000;" << std::endl;
+    config_os << "sim_count = 1;" << std::endl;
+    config_os << "max_samples = 10;" << std::endl;
+    
+    config_os.close();
+    return true;
+  }
 };
 #endif

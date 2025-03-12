@@ -24,19 +24,25 @@ public:
   } internal_node;
 
   struct PerformanceStats {
+    // Execution times
     std::chrono::duration<int64_t, std::micro> total_time{0};
+    std::chrono::duration<int64_t, std::micro> digraph_create_time{0};
+    std::chrono::duration<int64_t, std::micro> initialization_time{0};
     std::chrono::duration<int64_t, std::micro> path_computation_time{0};
     std::chrono::duration<int64_t, std::micro> edge_add_time{0};
     std::chrono::duration<int64_t, std::micro> cycle_check_time{0};
     std::chrono::duration<int64_t, std::micro> update_path_loop1_time{0};
     std::chrono::duration<int64_t, std::micro> update_path_loop2_time{0};
-    
+    std::chrono::duration<int64_t, std::micro> get_addable_edges_time{0};
+
+    // Counters
     size_t edge_additions{0};
     size_t path_computations{0};
     size_t cycle_checks{0};
     size_t update_path_loop1_calls{0};
     size_t update_path_loop2_calls{0};
-    
+    size_t get_addable_edges_calls{0};
+
     void reset();
     void print() const;
   };
@@ -65,8 +71,10 @@ public:
 
   // Initialize with different routing strategies
   static digraph create_xy_routing(unsigned num_chips_x, unsigned num_chips_y);
-  static digraph create_west_first_routing(unsigned num_chips_x, unsigned num_chips_y);
-  static digraph create_odd_even_routing(unsigned num_chips_x, unsigned num_chips_y);
+  static digraph create_west_first_routing(unsigned num_chips_x,
+                                           unsigned num_chips_y);
+  static digraph create_odd_even_routing(unsigned num_chips_x,
+                                         unsigned num_chips_y);
 
   // Core algorithms
   void compute_paths();
@@ -83,7 +91,8 @@ public:
   void print_matrices() const;
   void debug_print_matrices() const;
   void verify_edge_add(unsigned i, unsigned j) const;
-  bool has_cpu_path(size_t src_x, size_t src_y, size_t dst_x, size_t dst_y) const;
+  bool has_cpu_path(size_t src_x, size_t src_y, size_t dst_x,
+                    size_t dst_y) const;
   bool check_all_cpu_paths() const;
   void add_all_possible_edges();
   void add_random_edges(std::mt19937_64 &rng);
@@ -91,14 +100,17 @@ public:
   unsigned count_all_turn_edges() const;
   void print_stats() const;
   void print_perf_stats() const;
-  const PerformanceStats& get_perf_stats() const;
+  const PerformanceStats &get_perf_stats() const;
   void reset_perf_stats();
   unsigned NumChipsX() const;
   unsigned NumChipsY() const;
   const char *node_type_to_string(internal_node node) const;
-  
+
   // File I/O
-  bool log_turn_edges(const std::string &filename, const std::string &routing_type, bool optimized) const;
-  bool export_booksim2_anynet(const std::string &filename, const std::string &routing_type, bool optimized) const;
+  bool log_turn_edges(const std::string &filename,
+                      const std::string &routing_type, bool optimized) const;
+  bool export_booksim2_anynet(const std::string &filename,
+                              const std::string &routing_type,
+                              bool optimized) const;
 };
 #endif

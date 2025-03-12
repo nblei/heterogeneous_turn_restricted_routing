@@ -20,9 +20,9 @@ void digraph::update_path(unsigned i, unsigned j) {
   _path.apply_row_mask_efficient(i, j_row_data);
 
   auto end_loop1 = std::chrono::high_resolution_clock::now();
-  _perf_stats.update_path_loop1_time +=
-      std::chrono::duration_cast<std::chrono::microseconds>(end_loop1 -
-                                                            start_loop1);
+  auto duration_loop1 = std::chrono::duration_cast<std::chrono::microseconds>(end_loop1 - start_loop1);
+  _perf_stats.update_path_loop1_time += duration_loop1;
+  _perf_stats.total_time += duration_loop1;
   _perf_stats.update_path_loop1_calls++;
 
   // For each node that had a path to i, update its paths
@@ -31,61 +31,31 @@ void digraph::update_path(unsigned i, unsigned j) {
   // Cache the i-th row for repeated access
   const auto i_row_data = _path.get_row_data(i);
 
-// Collect all nodes that need updating
-#ifdef ENABLE_PROFILING
-  auto start_collect = std::chrono::high_resolution_clock::now();
-#endif
-
+  // Collect all nodes that need updating
   std::vector<unsigned> nodes_to_update;
   // Use column-based collection which is more efficient for this operation
   // This is a transpose operation - finding all rows that have column i set
   _path.collect_column_indices_fast(i, nodes_to_update);
 
-#ifdef ENABLE_PROFILING
-  auto end_collect = std::chrono::high_resolution_clock::now();
-  auto collect_time = std::chrono::duration_cast<std::chrono::microseconds>(
-                          end_collect - start_collect)
-                          .count();
-  std::cout << "Column collection time: " << collect_time / 1000.0 << " ms for "
-            << nodes_to_update.size() << " nodes" << std::endl;
-#endif
+  // THREAD SAFETY NOTE:
+  // This parallel implementation depends on the specific implementation of
+  // bit_matrix where set_bit() is thread-safe when operating on different rows.
+  // If the bit_matrix implementation changes, this may need locking.
+  //
+  // Specifically, this assumes:
+  // 1. Each row's storage is separate in memory (no overlap)
+  // 2. set_bit() only modifies memory associated with the given row
+  // 3. No internal shared state is modified when setting bits
+  //
+  // If these assumptions break, you would need to either:
+  // - Use critical sections around _path.set_bit(k, l) calls
+  // - Create thread-local bit_matrix objects for each thread and merge at the
+  // end
 
-// THREAD SAFETY NOTE:
-// This parallel implementation depends on the specific implementation of
-// bit_matrix where set_bit() is thread-safe when operating on different rows.
-// If the bit_matrix implementation changes, this may need locking.
-//
-// Specifically, this assumes:
-// 1. Each row's storage is separate in memory (no overlap)
-// 2. set_bit() only modifies memory associated with the given row
-// 3. No internal shared state is modified when setting bits
-//
-// If these assumptions break, you would need to either:
-// - Use critical sections around _path.set_bit(k, l) calls
-// - Create thread-local bit_matrix objects for each thread and merge at the end
+  // No thread tracking needed in single-threaded version
 
-// PROFILING: Print thread activity information
-#ifdef ENABLE_PROFILING
-  std::cout << "Starting parallel section with " << nodes_to_update.size()
-            << " nodes to update. Available threads: " << omp_get_max_threads()
-            << std::endl;
-  std::atomic<int> actual_threads_used{0};
-  int max_threads_seen = 0;
-#endif
-
-#ifdef ENABLE_PROFILING
-#pragma omp parallel for schedule(dynamic, 8) reduction(max : max_threads_seen)
-#else
-#pragma omp parallel for schedule(dynamic, 64)
-#endif
+  // Process each node that needs updating (now in single-threaded mode)
   for (size_t idx = 0; idx < nodes_to_update.size(); idx++) {
-#ifdef ENABLE_PROFILING
-    // Track thread utilization
-    int thread_num = omp_get_thread_num();
-    actual_threads_used++;
-    max_threads_seen = std::max(max_threads_seen, omp_get_num_threads());
-#endif
-
     unsigned k = nodes_to_update[idx];
 
     // We'll use a faster SIMD approach to check if any bits need to be updated
@@ -107,7 +77,8 @@ void digraph::update_path(unsigned i, unsigned j) {
       // Check if result has any bits set (is non-zero)
       __m256i zero = _mm256_setzero_si256();
       if (!_mm256_testz_si256(
-              new_bits, new_bits)) { // Returns 1 if all zero, 0 if any bit set
+              new_bits,
+              new_bits)) { // Returns 1 if all zero, 0 if any bit set
         needs_update = true;
       }
     }
@@ -120,18 +91,12 @@ void digraph::update_path(unsigned i, unsigned j) {
     }
   }
 
-#ifdef ENABLE_PROFILING
-  // Report thread utilization
-  std::cout << "Completed parallel section. "
-            << "Actual threads used: " << actual_threads_used.load()
-            << ", Max concurrent threads: " << max_threads_seen
-            << ", Total updates: " << nodes_to_update.size() << std::endl;
-#endif
+  // Single-threaded version, no parallel metrics to track
 
   auto end_loop2 = std::chrono::high_resolution_clock::now();
-  _perf_stats.update_path_loop2_time +=
-      std::chrono::duration_cast<std::chrono::microseconds>(end_loop2 -
-                                                            start_loop2);
+  auto duration_loop2 = std::chrono::duration_cast<std::chrono::microseconds>(end_loop2 - start_loop2);
+  _perf_stats.update_path_loop2_time += duration_loop2;
+  _perf_stats.total_time += duration_loop2;
   _perf_stats.update_path_loop2_calls++;
 }
 
@@ -272,12 +237,21 @@ void digraph::initialize_grid_connections() {
 // Initialize with basic grid connectivity but no turns
 digraph::digraph(unsigned num_chips_x, unsigned num_chips_y)
     : digraph(num_chips_x * num_chips_y * total_nodes) {
+  auto start_time = std::chrono::high_resolution_clock::now();
+
   _num_chips_x = num_chips_x;
   _num_chips_y = num_chips_y;
 
   initialize_viable_edges();
   initialize_grid_connections();
+  
+  // Note: compute_paths will add its own timing to total_time
   compute_paths();
+
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) - _perf_stats.path_computation_time;
+  _perf_stats.initialization_time = duration;
+  _perf_stats.total_time += duration;
 }
 
 // Initialize with XY routing
@@ -564,7 +538,7 @@ digraph digraph::create_odd_even_routing(unsigned num_chips_x,
   return d;
 }
 
-// Warshall's algorithm
+// Warshall's algorithm with SIMD optimizations
 void digraph::compute_paths() {
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -573,25 +547,27 @@ void digraph::compute_paths() {
 
   // For each intermediate vertex k
   for (unsigned k = 0; k < _n; k++) {
-    // For each source vertex i
-    for (unsigned i = 0; i < _n; i++) {
-      // If there's a path from i to k
-      if (_path.get_bit(i, k)) {
-        // For each destination vertex j
-        for (unsigned j = 0; j < _n; j++) {
-          // If there's a path from k to j, then there's a path from i to j
-          if (_path.get_bit(k, j)) {
-            _path.set_bit(i, j);
-          }
-        }
-      }
+    // Cache the k-th row for repeated access - this avoids costly memory access patterns
+    const auto k_row_data = _path.get_row_data(k);
+    
+    // Find all nodes that have a path to k
+    std::vector<unsigned> sources_with_path_to_k;
+    _path.collect_column_indices_fast(k, sources_with_path_to_k);
+    
+    // Process only nodes that have a path to k
+    for (unsigned src_idx = 0; src_idx < sources_with_path_to_k.size(); src_idx++) {
+      unsigned i = sources_with_path_to_k[src_idx];
+      
+      // Use SIMD-accelerated row operations to set all bits in row i that are set in row k
+      // This replaces the entire inner j-loop with a single SIMD operation
+      _path.apply_row_mask_efficient(i, k_row_data);
     }
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  _perf_stats.path_computation_time +=
-      std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-                                                            start_time);
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+  _perf_stats.path_computation_time += duration;
+  _perf_stats.total_time += duration;
   _perf_stats.path_computations++;
 }
 
@@ -610,9 +586,9 @@ void digraph::addedge(unsigned i, unsigned j) {
   update_path(i, j);
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  _perf_stats.edge_add_time +=
-      std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-                                                            start_time);
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+  _perf_stats.edge_add_time += duration;
+  _perf_stats.total_time += duration;
   _perf_stats.edge_additions++;
 }
 
@@ -655,9 +631,9 @@ bool digraph::check_cycle_and_track() {
   bool has_cycle = check_cycle();
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  _perf_stats.cycle_check_time +=
-      std::chrono::duration_cast<std::chrono::microseconds>(end_time -
-                                                            start_time);
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+  _perf_stats.cycle_check_time += duration;
+  _perf_stats.total_time += duration;
   _perf_stats.cycle_checks++;
 
   return has_cycle;
@@ -679,18 +655,6 @@ bit_matrix digraph::get_addable_edges() const {
         if (result.get_bit(v, u)) {
           result.clear_bit(v, u);
           removed++;
-        }
-      }
-    }
-  }
-
-  // Debug: Print some example addable edges
-  if (result.count_ones() > 0) {
-    unsigned count = 0;
-    for (unsigned i = 0; i < _n && count < 5; i++) {
-      for (unsigned j = 0; j < _n && count < 5; j++) {
-        if (result.get_bit(i, j)) {
-          count++;
         }
       }
     }
@@ -1069,28 +1033,39 @@ bool digraph::export_booksim2_anynet(const std::string &filename,
 }
 
 void digraph::PerformanceStats::reset() {
+  // Execution times
   total_time = std::chrono::duration<int64_t, std::micro>{0};
+  initialization_time = std::chrono::duration<int64_t, std::micro>{0};
   path_computation_time = std::chrono::duration<int64_t, std::micro>{0};
   edge_add_time = std::chrono::duration<int64_t, std::micro>{0};
   cycle_check_time = std::chrono::duration<int64_t, std::micro>{0};
   update_path_loop1_time = std::chrono::duration<int64_t, std::micro>{0};
   update_path_loop2_time = std::chrono::duration<int64_t, std::micro>{0};
+  get_addable_edges_time = std::chrono::duration<int64_t, std::micro>{0};
+
+  // Counters
   edge_additions = 0;
   path_computations = 0;
   cycle_checks = 0;
   update_path_loop1_calls = 0;
   update_path_loop2_calls = 0;
+  get_addable_edges_calls = 0;
 }
 
 void digraph::PerformanceStats::print() const {
   std::cout << "Digraph Performance Stats:\n";
   std::cout << "  Total time: " << total_time.count() / 1000.0 << " ms\n";
+  std::cout << "  Initialization: " << initialization_time.count() / 1000.0
+            << " ms\n";
   std::cout << "  Path computation: " << path_computation_time.count() / 1000.0
             << " ms (" << path_computations << " calls)\n";
   std::cout << "  Edge additions: " << edge_add_time.count() / 1000.0 << " ms ("
             << edge_additions << " calls)\n";
   std::cout << "  Cycle checks: " << cycle_check_time.count() / 1000.0
             << " ms (" << cycle_checks << " calls)\n";
+  std::cout << "  Get addable edges: "
+            << get_addable_edges_time.count() / 1000.0 << " ms ("
+            << get_addable_edges_calls << " calls)\n";
   std::cout << "  update_path loop1: "
             << update_path_loop1_time.count() / 1000.0 << " ms ("
             << update_path_loop1_calls << " calls)\n";

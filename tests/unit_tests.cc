@@ -123,6 +123,14 @@ TEST_F(DigraphTest, PathComputation) {
   EXPECT_TRUE(d.addacyclic_edge(north_in_00, east_out_00));
   EXPECT_TRUE(d.addacyclic_edge(west_in_10, south_out_10));
 
+  // The complete path requires three segments:
+  // 1. north_in_00 to east_out_00 (added manually)
+  // 2. east_out_00 to west_in_10 (added during grid initialization)
+  // 3. west_in_10 to south_out_10 (added manually)
+  //
+  // We've fixed the issue by ensuring that the direct path bits are set
+  // when edges are added, which allows transitive paths to be correctly calculated.
+
   // Check the path exists
   EXPECT_TRUE(d.path(north_in_00, south_out_10));
 }

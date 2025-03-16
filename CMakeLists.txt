@@ -29,16 +29,36 @@ add_custom_command(
   COMMENT "Copying BookSim2 executable to build directory"
 )
 
+# Enable OpenMP
+find_package(OpenMP REQUIRED)
+add_library(digraph
+  src/digraph.cc
+  src/matrix.cc
+  src/routing_optimizer.cc
+)
+target_link_libraries(digraph PRIVATE
+  OpenMP::OpenMP_CXX
+)
+target_include_directories(digraph PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)
+
 # Add your main executable
 add_executable(my_executable 
   src/main.cc
-  src/digraph.cc
 )
+
 add_dependencies(my_executable booksim2)
 
-# Enable OpenMP
-find_package(OpenMP REQUIRED)
-target_link_libraries(my_executable PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(my_executable PRIVATE
+  OpenMP::OpenMP_CXX
+  digraph
+)
+# Include directories
+target_include_directories(my_executable PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/inc
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/booksim2/src
+)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -save-temps")
 
@@ -48,11 +68,6 @@ if(ENABLE_PROFILING)
   message(STATUS "Profiling is enabled")
 endif()
 
-# Include directories
-target_include_directories(my_executable PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/inc
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/booksim2/src
-)
 
 # Google Test setup
 include(FetchContent)
@@ -75,6 +90,7 @@ add_executable(unit_tests
 target_link_libraries(unit_tests PRIVATE
   GTest::gtest_main
   OpenMP::OpenMP_CXX
+  digraph
 )
 target_include_directories(unit_tests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/inc

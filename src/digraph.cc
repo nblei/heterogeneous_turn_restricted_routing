@@ -13,6 +13,18 @@ void digraph::update_path(unsigned i, unsigned j) {
   // Update paths from i based on paths from j
   auto start_loop1 = std::chrono::high_resolution_clock::now();
 
+  // First, check if there's an edge from i to j
+  if (!_adj.get_bit(i, j)) {
+    // If there's no direct edge from i to j in the adjacency matrix,
+    // then we don't need to update the path for this specific case
+    auto end_loop1 = std::chrono::high_resolution_clock::now();
+    auto duration_loop1 = std::chrono::duration_cast<std::chrono::microseconds>(end_loop1 - start_loop1);
+    _perf_stats.update_path_loop1_time += duration_loop1;
+    _perf_stats.total_time += duration_loop1;
+    _perf_stats.update_path_loop1_calls++;
+    return;
+  }
+
   // Instead of checking each bit individually, use SIMD to copy all set bits
   // from row j to row i We'll extract row j, then apply it to row i using SIMD
   // operations with the efficient version
@@ -231,6 +243,10 @@ void digraph::initialize_grid_connections() {
       }
     }
   }
+  
+  // After setting up the grid connections, make sure to recompute the path matrix
+  // to properly initialize reachability
+  compute_paths();
 }
 
 // Public methods
@@ -245,8 +261,8 @@ digraph::digraph(unsigned num_chips_x, unsigned num_chips_y)
   initialize_viable_edges();
   initialize_grid_connections();
   
-  // Note: compute_paths will add its own timing to total_time
-  compute_paths();
+  // Note: compute_paths is now called inside initialize_grid_connections
+  // so we don't need to call it again here.
 
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) - _perf_stats.path_computation_time;
@@ -582,7 +598,12 @@ void digraph::addedge(unsigned i, unsigned j) {
   _adj.set_bit(i, j);
   unsigned new_count = _adj.count_ones();
 
-  // Recompute paths after adding edge
+  // Set direct path from i to j in the path matrix
+  _path.set_bit(i, j);
+  
+  // Update paths after adding edge
+  // This handles simple cases of transitive paths, but for complex cases
+  // with multiple edges added, compute_paths() is needed
   update_path(i, j);
 
   auto end_time = std::chrono::high_resolution_clock::now();
